@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ブロスタ×フォト バトル</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#12151f;color:#fff;font-family:sans-serif;overflow:hidden}
+#lobby{position:fixed;inset:0;overflow:auto;padding:12px}
+h1{font-size:20px;margin:0 0 8px}
+input,button{font-size:16px;padding:10px;border-radius:8px;border:0}
+input{background:#222a3d;color:#fff;width:100%;margin-bottom:6px}
+button{background:#3b82f6;color:#fff}
+.ch{margin:3px;background:#222a3d;border:2px solid #222a3d}
+.ch.on{border-color:#facc15}
+.ch small{display:block;font-size:11px;opacity:.7}
+.box{background:#1a2030;border-radius:8px;padding:8px;margin:8px 0;font-size:14px}
+#log,#glog{font-size:13px}
+#log{max-height:110px;overflow:auto}
+#game{position:fixed;inset:0;touch-action:none;user-select:none;-webkit-user-select:none}
+canvas{display:block;width:100%;height:100%}
+.stick{position:absolute;bottom:24px;width:120px;height:120px;border-radius:50%;background:rgba(255,255,255,.15);touch-action:none}
+.stick div{position:absolute;left:35px;top:35px;width:50px;height:50px;border-radius:50%;background:rgba(255,255,255,.6)}
+#L{left:20px}#R{right:20px}
+#hud{position:absolute;top:6px;left:8px;font-size:14px;text-shadow:0 0 3px #000}
+#glog{position:absolute;top:40px;left:8px;text-shadow:0 0 3px #000;pointer-events:none}
+.gb{position:absolute;padding:12px;font-size:20px}
+#bb{right:24px;bottom:160px;background:#f59e0b}
+#cb{right:24px;top:8px;background:#10b981}
+#banner{position:absolute;inset:40% 0 auto 0;text-align:center;font-size:28px;font-weight:bold;text-shadow:0 0 6px #000}
+</style></head><body>
+<div id="lobby">
+<h1>⚔️ ブロスタ×フォト バトル</h1>
+<input id="name" placeholder="名前(8文字まで)" maxlength="8">
+<input id="code" placeholder="ルームコード(友達と同じにする/空なら新規)" maxlength="6">
+<div id="chars"></div>
+<button id="join" style="width:100%;margin-top:6px">入る</button>
+<div id="roomui" hidden>
+  <div class="box">ルーム <b id="rc"></b>:<span id="pl"></span></div>
+  <button id="start" hidden style="width:100%">▶ スタート(足りない人数はBOTが入ります)</button>
+  <div class="box"><div id="log"></div>
+  <input id="msg" placeholder="チャット" maxlength="60" style="margin:6px 0 0"></div>
+</div>
+<div class="box"><b>🏆 ランキング</b><div id="rank">まだいません</div></div>
+</div>
+
+<div id="game" hidden>
+<canvas id="cv"></canvas>
+<div id="hud"></div><div id="glog"></div><div id="banner"></div>
+<button class="gb" id="cb">💬</button>
+<button class="gb" id="bb">🧱</button>
+<div class="stick" id="L"><div></div></div>
+<div class="stick" id="R"><div></div></div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const socket=io();
+let CH={},char='gunner',joined=false,R=null,S=null,inGame=false;
+const inp={dx:0,dy:0,angle:0,shoot:false};
+
+socket.on('chars',c=>{CH=c;drawChars();});
+function drawChars(){
+  $('#chars').innerHTML=Object.entries(CH).map(([k,c])=>
+    `<button class="ch ${k===char?'on':''}" data-k="${k}">${c.name}<small>HP${c.hp} 攻撃${c.dmg}</small></button>`).join('');
+}
+$('#chars').onclick=e=>{
+  const b=e.target.closest('.ch');if(!b)return;
+  char=b.dataset.k;drawChars();
+  if(joined)socket.emit('char',char);
+};
+$('#join').onclick=()=>{
+  const n=$('#name').value.trim()||'ゲスト';
+  const c=$('#code').value.trim().toUpperCase()||Math.random().toString(36).slice(2,6).toUpperCase();
+  $('#code').value=c;
+  socket.emit('join',{code:c,name:n,char});
+  joined=true;$('#roomui').hidden=false;
+};
+$('#start').onclick=()=>socket.emit('start');
+$('#msg').onkeydown=e=>{if(e.key==='Enter'&&e.target.value.trim()){socket.emit('chat',e.target.value.trim());e.target.value='';}};
+$('#cb').onclick=()=>{const t=prompt('チャット');if(t)socket.emit('chat',t);};
+$('#bb').onclick=()=>socket.emit('build');
+
+socket.on('room',r=>{
+  R=r;
+  $('#rc').textContent=r.code;
+  $('#pl').textContent=r.players.map(p=>p.n+'('+(CH[p.c]?CH[p.c].name:'')+')').join(' / ');
+  $('#start').hidden=!(r.host===socket.id&&r.state==='lobby');
+  inGame=r.state==='play';
+  if(r.state==='lobby'){S=null;}
+  $('#game').hidden=r.state==='lobby';
+  $('#lobby').hidden=r.state!=='lobby';
+  if(r.state!=='lobby')resize();
+});
+socket.on('s',s=>{S=s;$('#game').hidden=false;$('#lobby').hidden=true;});
+socket.on('rank',a=>{
+  $('#rank').innerHTML=a.length?a.map((x,i)=>`${i+1}. ${x.n} — ${x.w}勝 / ${x.k}キル`).join('<br>'):'まだいません';
+});
+const glog=[];
+socket.on('chat',m=>{
+  const l=document.createElement('div');l.textContent=m.n+': '+m.t;
+  $('#log').appendChild(l);$('#log').scrollTop=1e9;
+  glog.push(m.n+': '+m.t);if(glog.length>4)glog.shift();
+  $('#glog').innerHTML=glog.map(t=>'<div></div>').join('');
+  [...$('#glog').children].forEach((d,i)=>d.textContent=glog[i]);
+});
+
+function stick(el,cb){
+  const k=el.firstElementChild;let id=null,cx=0,cy=0;const RR=50;
+  function mv(e){
+    let dx=e.clientX-cx,dy=e.clientY-cy;const l=Math.hypot(dx,dy);
+    if(l>RR){dx=dx/l*RR;dy=dy/l*RR;}
+    k.style.transform=`translate(${dx}px,${dy}px)`;cb(dx/RR,dy/RR,true);
+  }
+  el.addEventListener('pointerdown',e=>{
+    id=e.pointerId;el.setPointerCapture(id);
+    const r=el.getBoundingClientRect();cx=r.left+r.width/2;cy=r.top+r.height/2;mv(e);
+  });
+  el.addEventListener('pointermove',e=>{if(e.pointerId===id)mv(e);});
+  const up=e=>{if(e.pointerId===id){id=null;k.style.transform='';cb(0,0,false);}};
+  el.addEventListener('pointerup',up);el.addEventListener('pointercancel',up);
+}
+stick($('#L'),(x,y)=>{inp.dx=x;inp.dy=y;});
+stick($('#R'),(x,y,on)=>{
+  const m=Math.hypot(x,y);
+  if(on&&m>0.2){inp.angle=Math.atan2(y,x);inp.shoot=true;}else inp.shoot=false;
+});
+setInterval(()=>{if(inGame)socket.emit('input',inp);},50);
+
+const cv=$('#cv'),ctx=cv.getContext('2d');
+function resize(){cv.width=innerWidth;cv.height=innerHeight;}
+addEventListener('resize',resize);
+const col=id=>{let h=0;for(const c of id)h=(h*31+c.charCodeAt(0))%360;return `hsl(${h},80%,60%)`;};
+function draw(){
+  requestAnimationFrame(draw);
+  if(!S||$('#game').hidden)return;
+  const W=cv.width,H=cv.height;
+  const me=S.p.find(p=>p.id===socket.id);
+  const f=me&&me.a?me:(S.p.find(p=>p.a)||{x:800,y:800});
+  ctx.fillStyle='#1d2b1f';ctx.fillRect(0,0,W,H);
+  ctx.save();ctx.translate(W/2-f.x,H/2-f.y);
+  ctx.strokeStyle='rgba(255,255,255,.07)';ctx.lineWidth=1;
+  for(let i=0;i<=1600;i+=100){ctx.beginPath();ctx.moveTo(i,0);ctx.lineTo(i,1600);ctx.moveTo(0,i);ctx.lineTo(1600,i);ctx.stroke();}
+  ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.strokeRect(0,0,1600,1600);
+  ctx.beginPath();ctx.rect(-3000,-3000,7600,7600);ctx.arc(800,800,S.z,0,7);
+  ctx.fillStyle='rgba(200,0,60,.35)';ctx.fill('evenodd');
+  for(const w of S.w){ctx.fillStyle=`rgba(180,140,80,${.4+w[2]/140})`;ctx.fillRect(w[0]-28,w[1]-28,56,56);}
+  ctx.fillStyle='#ffe066';
+  for(const b of S.b){ctx.beginPath();ctx.arc(b[0],b[1],4,0,7);ctx.fill();}
+  for(const p of S.p){
+    if(!p.a)continue;
+    ctx.fillStyle=col(p.id);ctx.beginPath();ctx.arc(p.x,p.y,18,0,7);ctx.fill();
+    if(p.id===socket.id){ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.stroke();}
+    ctx.strokeStyle='#000';ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x+Math.cos(p.g)*28,p.y+Math.sin(p.g)*28);ctx.stroke();
+    ctx.fillStyle='#400';ctx.fillRect(p.x-22,p.y-32,44,6);
+    ctx.fillStyle='#4ade80';ctx.fillRect(p.x-22,p.y-32,44*p.h/p.m,6);
+    ctx.fillStyle='#fff';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText(p.n,p.x,p.y-38);
+  }
+  ctx.restore();
+  const al=S.p.filter(p=>p.a).length;
+  $('#hud').textContent=`生存 ${al}人 / キル ${me?me.k:0} / ${S.t}秒`+(me&&!me.a?' (観戦中)':'');
+  $('#banner').textContent=S.st==='over'?`🏆 ${S.win} の勝ち!`:'';
+}
+draw();
+</script>
+</body></html>
